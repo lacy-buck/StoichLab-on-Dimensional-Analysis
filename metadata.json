@@ -1,0 +1,6 @@
+{
+  "name": "StoichioLab - High School Chemistry Stoichiometry & Dimensional Analysis",
+  "description": "Interactive stoichiometry exploration and dimensional analysis tutor for chemistry students, featuring visual mole roadmaps, draggable conversion tiles with unit cancellation, and real-world reaction scenarios.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
