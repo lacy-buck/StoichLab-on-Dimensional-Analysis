@@ -489,7 +489,7 @@ export function generateRandomProblem(chosenType?: ConversionType): Stoichiometr
 /**
  * Generate candidate tiles for a problem:
  * 1. Molar Mass tiles: ALWAYS grams on top, 1 mol on bottom (student must flip when converting g -> mol).
- * 2. Mole-to-Mole ratio tiles: Vary the initial orientation (sometimes inverted) so students check and flip.
+ * 2. Mole-to-Mole ratio tiles: The substance that appears first in the reaction is placed on the bottom.
  * 3. Include extra distractor mole-mole ratios from the reaction that aren't needed.
  */
 export function generateCandidateTiles(problem: StoichiometryProblem): ConversionFactorTile[] {
@@ -515,32 +515,45 @@ export function generateCandidateTiles(problem: StoichiometryProblem): Conversio
     });
   }
 
-  // Mole ratio for the problem: randomly decide whether it starts as target/given or given/target
+  const allParticipants = [...problem.reaction.reactants, ...problem.reaction.products];
+  const getReactionOrderIndex = (formula: string) => {
+    const idx = allParticipants.findIndex(
+      p => p.compound.formula.trim().toLowerCase() === formula.trim().toLowerCase()
+    );
+    return idx >= 0 ? idx : 999;
+  };
+
+  // Mole ratio for the problem:
+  // User rule: The substance that appears first in the reaction MUST be on the bottom (denominator).
   const expectedMoleStep = problem.expectedSteps.find(s => s.type === 'mole-ratio');
   if (expectedMoleStep) {
-    const shouldStartFlipped = Math.random() > 0.5;
-    const num = shouldStartFlipped ? expectedMoleStep.denominator : expectedMoleStep.numerator;
-    const den = shouldStartFlipped ? expectedMoleStep.numerator : expectedMoleStep.denominator;
+    const s1 = expectedMoleStep.numerator;
+    const s2 = expectedMoleStep.denominator;
+    const idx1 = getReactionOrderIndex(s1.compoundFormula);
+    const idx2 = getReactionOrderIndex(s2.compoundFormula);
+
+    // Whichever appears first in the reaction goes on the bottom (denominator)
+    const firstInReaction = idx1 < idx2 ? s1 : s2;
+    const secondInReaction = idx1 < idx2 ? s2 : s1;
 
     tiles.push({
       id: `tile_mole_ratio_main`,
-      title: `Mole Ratio (${num.compoundFormula} / ${den.compoundFormula})`,
+      title: `Mole Ratio (${secondInReaction.compoundFormula} / ${firstInReaction.compoundFormula})`,
       type: 'mole-ratio',
-      numerator: { ...num },
-      denominator: { ...den },
+      numerator: { ...secondInReaction },
+      denominator: { ...firstInReaction },
     });
   }
 
   // Distractor mole-mole ratios from the balanced equation!
-  // Find other pairs of participants
-  const allParticipants = [...problem.reaction.reactants, ...problem.reaction.products];
+  // Same rule: The participant appearing first in the reaction is placed on the bottom.
   const givenFormula = problem.given.compound.formula.toLowerCase();
   const targetFormula = problem.target.compound.formula.toLowerCase();
 
   for (let i = 0; i < allParticipants.length; i++) {
     for (let j = i + 1; j < allParticipants.length; j++) {
-      const p1 = allParticipants[i];
-      const p2 = allParticipants[j];
+      const p1 = allParticipants[i]; // appears first in reaction (i < j)
+      const p2 = allParticipants[j]; // appears second in reaction
       const f1 = p1.compound.formula.toLowerCase();
       const f2 = p2.compound.formula.toLowerCase();
 
@@ -548,11 +561,11 @@ export function generateCandidateTiles(problem: StoichiometryProblem): Conversio
       const isExpectedPair = (f1 === givenFormula && f2 === targetFormula) || (f1 === targetFormula && f2 === givenFormula);
       if (!isExpectedPair && tiles.filter(t => t.type === 'distractor').length < 2) {
         tiles.push({
-          id: `tile_distractor_ratio_${p1.compound.formula}_${p2.compound.formula}`,
-          title: `Unneeded Mole Ratio (${p1.compound.formula} / ${p2.compound.formula})`,
+          id: `tile_distractor_ratio_${p2.compound.formula}_${p1.compound.formula}`,
+          title: `Unneeded Mole Ratio (${p2.compound.formula} / ${p1.compound.formula})`,
           type: 'distractor',
-          numerator: { value: p1.coefficient, unit: 'mol', compoundFormula: p1.compound.formula },
-          denominator: { value: p2.coefficient, unit: 'mol', compoundFormula: p2.compound.formula },
+          numerator: { value: p2.coefficient, unit: 'mol', compoundFormula: p2.compound.formula },
+          denominator: { value: p1.coefficient, unit: 'mol', compoundFormula: p1.compound.formula }, // p1 is on the bottom
         });
       }
     }

@@ -54,7 +54,26 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
   const [typedGivenUnit, setTypedGivenUnit] = useState<'g' | 'mol' | ''>('');
   const [typedGivenCompound, setTypedGivenCompound] = useState<string>('');
 
+  const [selectedSlotIndex, setSelectedSlotIndex] = useState<number | null>(null);
+
   const normalize = (str: string) => str.trim().toLowerCase();
+
+  // Clean and normalize chemical formulas and subscripts for robust matching
+  const cleanFormula = (str: string) =>
+    str
+      .trim()
+      .toLowerCase()
+      .replace(/[\s\(\)\[\]]/g, '')
+      .replace(/₀/g, '0')
+      .replace(/₁/g, '1')
+      .replace(/₂/g, '2')
+      .replace(/₃/g, '3')
+      .replace(/₄/g, '4')
+      .replace(/₅/g, '5')
+      .replace(/₆/g, '6')
+      .replace(/₇/g, '7')
+      .replace(/₈/g, '8')
+      .replace(/₉/g, '9');
 
   // Reset workspace when problem changes
   useEffect(() => {
@@ -63,6 +82,7 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
     setAvailableTiles(generateCandidateTiles(problem));
     setActiveHintIndex(-1);
     setIsCompleted(false);
+    setSelectedSlotIndex(null);
 
     if (isSandboxOrChallenge) {
       setTypedGivenAmount('');
@@ -96,9 +116,9 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
     (!isSandboxOrChallenge ||
       (Math.abs(effectiveGivenAmount - problem.given.amount) < 0.01 &&
         normalize(effectiveGivenUnit) === normalize(problem.given.unit) &&
-        normalize(effectiveGivenCompound) === normalize(problem.given.compound.formula)));
+        cleanFormula(effectiveGivenCompound) === cleanFormula(problem.given.compound.formula)));
 
-  // Evaluate instant real-time validation per slot
+  // Evaluate instant real-time validation per slot for the FASTEST path
   const evaluateSlots = (): SlotValidation[] => {
     const validations: SlotValidation[] = [];
 
@@ -117,47 +137,115 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
         continue;
       }
 
-      // Target unit that MUST be in this slot's denominator to cancel
-      const neededUnit = i === 0 ? effectiveGivenUnit : fractions[i - 1].numeratorUnit;
-      const neededCompound = i === 0 ? effectiveGivenCompound : fractions[i - 1].numeratorCompound;
+      // Check if student added an unnecessary extra step beyond the fastest path
+      if (i >= problem.expectedSteps.length) {
+        validations.push({
+          isFilled: true,
+          isCorrect: false,
+          isInverted: false,
+          isError: true,
+          message: `Extra step! The fastest path to ${problem.target.unit} ${problem.target.compound.formula} only requires ${problem.expectedSteps.length} step${problem.expectedSteps.length > 1 ? 's' : ''}.`,
+        });
+        continue;
+      }
 
-      const denomMatches =
-        isGivenValid &&
-        normalize(f.denominatorUnit) === normalize(neededUnit) &&
-        normalize(f.denominatorCompound) === normalize(neededCompound);
+      const expectedStep = problem.expectedSteps[i];
 
-      if (denomMatches) {
+      const numVal = parseFloat(String(f.numeratorValue));
+      const denVal = parseFloat(String(f.denominatorValue));
+      const expNumVal = expectedStep.numerator.value;
+      const expDenVal = expectedStep.denominator.value;
+
+      const fNumUnit = normalize(f.numeratorUnit);
+      const fNumComp = cleanFormula(f.numeratorCompound);
+      const fDenUnit = normalize(f.denominatorUnit);
+      const fDenComp = cleanFormula(f.denominatorCompound);
+
+      const expNumUnit = normalize(expectedStep.numerator.unit);
+      const expNumComp = cleanFormula(expectedStep.numerator.compoundFormula);
+      const expDenUnit = normalize(expectedStep.denominator.unit);
+      const expDenComp = cleanFormula(expectedStep.denominator.compoundFormula);
+
+      // Check values match (float tolerance or proportional ratio)
+      const valuesMatch =
+        !isNaN(numVal) &&
+        !isNaN(denVal) &&
+        denVal !== 0 &&
+        expDenVal !== 0 &&
+        ((Math.abs(numVal - expNumVal) < 0.25 && Math.abs(denVal - expDenVal) < 0.25) ||
+          Math.abs((numVal / denVal) - (expNumVal / expDenVal)) < 0.01);
+
+      // Check direct match with the expected fastest step
+      const directMatch =
+        valuesMatch &&
+        fNumUnit === expNumUnit &&
+        fNumComp === expNumComp &&
+        fDenUnit === expDenUnit &&
+        fDenComp === expDenComp;
+
+      if (directMatch) {
         validations.push({
           isFilled: true,
           isCorrect: true,
           isInverted: false,
           isError: false,
-          message: `✓ Correct! ${f.denominatorUnit} ${f.denominatorCompound} cancels out.`,
+          message: `✓ Correct! Step ${i + 1} follows the fastest path to ${problem.target.unit} ${problem.target.compound.formula}.`,
+        });
+        continue;
+      }
+
+      // Check if inverted version of this expected step
+      const invertedValuesMatch =
+        !isNaN(numVal) &&
+        !isNaN(denVal) &&
+        numVal !== 0 &&
+        expNumVal !== 0 &&
+        ((Math.abs(numVal - expDenVal) < 0.25 && Math.abs(denVal - expNumVal) < 0.25) ||
+          Math.abs((numVal / denVal) - (expDenVal / expNumVal)) < 0.01);
+
+      const isInvertedExpected =
+        invertedValuesMatch &&
+        fNumUnit === expDenUnit &&
+        fNumComp === expDenComp &&
+        fDenUnit === expNumUnit &&
+        fDenComp === expNumComp;
+
+      if (isInvertedExpected) {
+        validations.push({
+          isFilled: true,
+          isCorrect: false,
+          isInverted: true,
+          isError: true,
+          message: `Inverted factor! Click ⇅ to flip so ${expectedStep.denominator.unit} ${expectedStep.denominator.compoundFormula} is on the bottom to cancel.`,
+        });
+        continue;
+      }
+
+      // Check if the denominator cancels the previous unit, but numerator is a detour (not fastest path)
+      const neededUnit = i === 0 ? effectiveGivenUnit : fractions[i - 1].numeratorUnit;
+      const neededCompound = i === 0 ? effectiveGivenCompound : fractions[i - 1].numeratorCompound;
+
+      const denomCancelsPrevious =
+        isGivenValid &&
+        normalize(f.denominatorUnit) === normalize(neededUnit) &&
+        cleanFormula(f.denominatorCompound) === cleanFormula(neededCompound);
+
+      if (denomCancelsPrevious) {
+        validations.push({
+          isFilled: true,
+          isCorrect: false,
+          isInverted: false,
+          isError: true,
+          message: `Cancels ${f.denominatorCompound}, but detours to ${f.numeratorCompound}! The fastest path directly bridges to ${expectedStep.numerator.compoundFormula}.`,
         });
       } else {
-        // Check if inverted: numerator has the needed cancellation unit
-        const numMatches =
-          isGivenValid &&
-          normalize(f.numeratorUnit) === normalize(neededUnit) &&
-          normalize(f.numeratorCompound) === normalize(neededCompound);
-
-        if (numMatches) {
-          validations.push({
-            isFilled: true,
-            isCorrect: false,
-            isInverted: true,
-            isError: true,
-            message: `Inverted fraction! Click ⇅ to flip so ${neededUnit} ${neededCompound} is on the bottom.`,
-          });
-        } else {
-          validations.push({
-            isFilled: true,
-            isCorrect: false,
-            isInverted: false,
-            isError: true,
-            message: `Wrong factor for Step ${i + 1}! It must cancel ${neededUnit} ${neededCompound}.`,
-          });
-        }
+        validations.push({
+          isFilled: true,
+          isCorrect: false,
+          isInverted: false,
+          isError: true,
+          message: `Wrong factor for Step ${i + 1}! The fastest path needs ${expectedStep.denominator.unit} ${expectedStep.denominator.compoundFormula} on bottom to cancel.`,
+        });
       }
     }
 
@@ -166,7 +254,7 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
 
   const slotValidations = evaluateSlots();
 
-  // Check which steps are completed for the Roadmap
+  // Check which steps are completed
   const completedIndices: number[] = [];
   slotValidations.forEach((v, idx) => {
     if (v.isCorrect) completedIndices.push(idx);
@@ -201,9 +289,12 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
 
   const liveResult = computeLiveResult();
 
-  // Check if ALL steps are filled, correct, and reached target unit
+  // Check if ALL steps are filled, correct, and matched the fastest path
   useEffect(() => {
     if (fractions.length === 0 || isCompleted || !isGivenValid) return;
+
+    // Must match the exact number of steps for the fastest path
+    if (fractions.length !== problem.expectedSteps.length) return;
 
     const allSlotsFilled = fractions.every(f => f.numeratorValue && f.denominatorValue);
     const allSlotsCorrect = slotValidations.length === fractions.length && slotValidations.every(v => v.isCorrect);
@@ -211,9 +302,9 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
     if (allSlotsFilled && allSlotsCorrect) {
       const lastFraction = fractions[fractions.length - 1];
       const finalUnit = normalize(lastFraction.numeratorUnit);
-      const finalCompound = normalize(lastFraction.numeratorCompound);
+      const finalCompound = cleanFormula(lastFraction.numeratorCompound);
       const targetUnit = normalize(problem.target.unit);
-      const targetCompound = normalize(problem.target.compound.formula);
+      const targetCompound = cleanFormula(problem.target.compound.formula);
 
       if (finalUnit === targetUnit && finalCompound === targetCompound) {
         setIsCompleted(true);
@@ -238,12 +329,12 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
     setFractions(updated);
   };
 
-  // Place a tile into a slot
+  // Place a tile into a slot (fills selected slot, first empty slot, or appends)
   const handlePlaceTile = (tile: ConversionFactorTile, targetSlotIndex?: number) => {
     const updated = [...fractions];
-    let slotIdx = targetSlotIndex;
+    let slotIdx = targetSlotIndex !== undefined ? targetSlotIndex : selectedSlotIndex;
 
-    if (slotIdx === undefined) {
+    if (slotIdx === null || slotIdx === undefined) {
       // Find first empty slot
       slotIdx = updated.findIndex(f => !f.numeratorValue && !f.denominatorValue);
       if (slotIdx === -1) {
@@ -258,6 +349,7 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
           denominatorCompound: tile.denominator.compoundFormula,
         });
         setFractions(updated);
+        setSelectedSlotIndex(null);
         return;
       }
     }
@@ -273,6 +365,7 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
         denominatorCompound: tile.denominator.compoundFormula,
       };
       setFractions(updated);
+      setSelectedSlotIndex(null);
     }
   };
 
@@ -308,12 +401,16 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
   const handleRemoveSlot = () => {
     if (fractions.length > 0) {
       setFractions(fractions.slice(0, -1));
+      if (selectedSlotIndex === fractions.length - 1) {
+        setSelectedSlotIndex(null);
+      }
     }
   };
 
   const handleResetWorkspace = () => {
     setFractions([]);
     setIsCompleted(false);
+    setSelectedSlotIndex(null);
   };
 
   const availableCompounds = [
@@ -482,7 +579,11 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
               const nextSlotCorrect = slotValidations[slotIndex + 1]?.isCorrect;
               const numCancels = validation.isCorrect && nextSlotCorrect;
 
-              const borderBgStyle = !validation.isFilled
+              const isSelected = selectedSlotIndex === slotIndex;
+
+              const borderBgStyle = isSelected
+                ? 'bg-blue-50/95 border-blue-500 ring-2 ring-blue-500/50'
+                : !validation.isFilled
                 ? 'bg-slate-50/80 border-slate-300'
                 : validation.isCorrect
                 ? 'bg-emerald-50/70 border-emerald-400 ring-2 ring-emerald-400/20'
@@ -499,21 +600,28 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
 
                   {/* Fraction Bracket */}
                   <div
-                    className={`flex flex-col items-center px-3 py-2 rounded-xl border transition-all duration-150 min-w-[155px] shadow-2xs ${borderBgStyle}`}
+                    onClick={() => setSelectedSlotIndex(slotIndex === selectedSlotIndex ? null : slotIndex)}
+                    className={`flex flex-col items-center px-3 py-2 rounded-xl border transition-all duration-150 min-w-[160px] max-w-[210px] shadow-2xs cursor-pointer ${borderBgStyle}`}
+                    title="Click slot to select for tile placement or replacement"
                   >
                     <div className="w-full flex items-center justify-between text-[10px] font-semibold text-slate-500 mb-1">
                       <span className="flex items-center gap-1">
                         <span>Step {slotIndex + 1}</span>
+                        {isSelected && (
+                          <span className="text-[9px] font-bold text-blue-700 bg-blue-100 px-1 rounded">
+                            Target
+                          </span>
+                        )}
                         {validation.isCorrect && (
                           <Check className="w-3 h-3 text-emerald-600" />
                         )}
                         {validation.isError && (
                           <span className="text-[9px] font-bold text-rose-600">
-                            {validation.isInverted ? 'INVERTED' : 'WRONG'}
+                            {validation.isInverted ? 'INVERTED' : 'DETOUR'}
                           </span>
                         )}
                       </span>
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                         <button
                           onClick={() => handleFlipFraction(slotIndex)}
                           title="Flip / Invert Fraction"
@@ -694,19 +802,30 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
                       )}
                     </div>
 
-                    {/* Immediate Error Message */}
+                    {/* Immediate Feedback */}
                     {validation.isError && (
-                      <div className="mt-1 text-[10px] font-semibold text-rose-700 text-center leading-tight">
+                      <div className="mt-1.5 w-full px-1.5 py-1 rounded bg-rose-100/90 border border-rose-300 text-[9.5px] font-medium text-rose-900 text-center leading-snug">
                         {validation.isInverted ? (
                           <button
-                            onClick={() => handleFlipFraction(slotIndex)}
-                            className="underline hover:text-rose-900"
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleFlipFraction(slotIndex);
+                            }}
+                            className="inline-flex items-center justify-center gap-1 font-bold text-rose-900 hover:text-rose-950 underline cursor-pointer"
                           >
-                            Click ⇅ to flip
+                            <ArrowUpDown className="w-2.5 h-2.5 shrink-0" />
+                            <span>Click ⇅ to flip</span>
                           </button>
                         ) : (
-                          <span>Wrong factor!</span>
+                          <span>{validation.message}</span>
                         )}
+                      </div>
+                    )}
+
+                    {validation.isCorrect && (
+                      <div className="mt-1 text-[9.5px] font-bold text-emerald-700 text-center leading-tight">
+                        <span>Fastest path ✓</span>
                       </div>
                     )}
 
@@ -774,9 +893,23 @@ export const DimensionalAnalysisWorkspace: React.FC<DimensionalAnalysisWorkspace
       {inputMode === 'tiles' && !isCompleted && (
         <div className="pt-2 border-t border-slate-100">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
-              Factor Tiles (Click tile to place · Molar masses start with g on top; flip when needed):
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                Factor Tiles (Click tile to place · Molar masses start with g on top; flip when needed):
+              </span>
+              {selectedSlotIndex !== null && (
+                <span className="text-[10px] font-bold text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                  Targeting Step {selectedSlotIndex + 1}
+                  <button
+                    onClick={() => setSelectedSlotIndex(null)}
+                    className="text-blue-500 hover:text-blue-900 ml-0.5"
+                    title="Deselect"
+                  >
+                    ×
+                  </button>
+                </span>
+              )}
+            </div>
             <button
               onClick={() => {
                 if (activeHintIndex < problem.hintLadder.length - 1) {
